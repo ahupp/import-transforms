@@ -4,7 +4,7 @@ import importlib.abc
 import ast
 from typing import Callable, TypeVar
 
-SourceTransform: TypeVar = Callable[[bytes], str | ast.AST]
+SourceTransform: TypeVar = Callable[[str], str | ast.AST]
 LoaderTransform: TypeVar = Callable[
     [importlib.abc.SourceLoader], importlib.abc.SourceLoader
 ]
@@ -27,7 +27,7 @@ class SourceTransformLoader(importlib.abc.SourceLoader):
         return self.base_loader.get_data(path)
 
     def source_to_code(self, data, path, *, _optimize=-1):
-        data_trans = self.transform(data)
+        data_trans = self.transform(data.decode("utf-8"))
         return compile(data_trans, path, mode="exec", optimize=_optimize)
 
 
@@ -89,4 +89,3 @@ def set_module_source_transform(module_name: str, transform: SourceTransform):
         return SourceTransformLoader(base_loader, transform)
 
     set_module_loader_transform(module_name, f)
-
