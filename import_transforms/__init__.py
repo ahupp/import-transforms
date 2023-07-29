@@ -76,7 +76,6 @@ def set_module_loader_transform(
 ):
     global _MODULE_TO_LOADER_TRANSFORM
 
-    # prefix matches either exact string, or
     regex = re.compile(fnmatch.translate(module_glob))
     if check_loaded:
         for mod in sys.modules:
