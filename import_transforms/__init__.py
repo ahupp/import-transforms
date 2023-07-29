@@ -1,4 +1,5 @@
 import sys
+import fnmatch, re
 import importlib
 import importlib.abc
 import ast
@@ -56,36 +57,41 @@ class CustomLoaderMetaPathFinder(importlib.abc.MetaPathFinder):
             return None
 
 
-_MODULE_TO_LOADER_TRANSFORM = {}
+_MODULE_TO_LOADER_TRANSFORM: list[tuple[re.Pattern, LoaderTransform]] = []
 
 sys.meta_path.insert(0, CustomLoaderMetaPathFinder)
 
 
 def get_module_loader_transform(fullname) -> None | LoaderTransform:
     global _MODULE_TO_LOADER_TRANSFORM
-    name_parts = fullname.split(".")
-    for i in range(1, len(name_parts) + 1):
-        loader = _MODULE_TO_LOADER_TRANSFORM.get(tuple(name_parts[0:i]))
-        if loader is not None:
-            return loader
+    for regex, loader_transform in _MODULE_TO_LOADER_TRANSFORM:
+        if regex.match(fullname):
+            return loader_transform
     else:
         return None
 
 
 def set_module_loader_transform(
-    module_name: str,
-    loader_transform: LoaderTransform,
+    module_glob: str, loader_transform: LoaderTransform, check_loaded: bool = True
 ):
     global _MODULE_TO_LOADER_TRANSFORM
 
-    key = tuple(module_name.split("."))
-    if key in _MODULE_TO_LOADER_TRANSFORM:
-        raise Exception(f"transform already defined for {module_name}")
-    _MODULE_TO_LOADER_TRANSFORM[key] = loader_transform
+    # prefix matches either exact string, or
+    regex = re.compile(fnmatch.translate(module_glob))
+    if check_loaded:
+        for mod in sys.modules:
+            if regex.match(mod):
+                raise Exception(
+                    f"Already loaded matching module: {mod} for prefix {module_glob}"
+                )
+
+    _MODULE_TO_LOADER_TRANSFORM.append((regex, loader_transform))
 
 
-def set_module_source_transform(module_name: str, transform: SourceTransform):
+def set_module_source_transform(
+    module_glob: str, transform: SourceTransform, check_loaded: bool = True
+):
     def f(base_loader):
         return SourceTransformLoader(base_loader, transform)
 
-    set_module_loader_transform(module_name, f)
+    set_module_loader_transform(module_glob, f, check_loaded)
