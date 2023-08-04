@@ -1,25 +1,33 @@
+from dataclasses import dataclass
+from importlib.machinery import ModuleSpec
 import sys
 import fnmatch, re
 import importlib
 import importlib.abc
 import ast
+import types
+import logging
 from typing import Callable, TypeVar
 
-SourceTransform: TypeVar = Callable[[str], str | ast.AST]
-LoaderTransform: TypeVar = Callable[
-    [importlib.abc.SourceLoader], importlib.abc.SourceLoader
-]
+SourceTransform: TypeVar = Callable[[str, str], str | ast.AST]
 
 
-# TODO: support bytecode cached files
-class SourceTransformLoader(importlib.abc.SourceLoader):
+@dataclass
+class SourceTransformState:
+    transform: SourceTransform
+    injected_values: dict[str, any]
+
+
+class _TransformSourceLoader(importlib.abc.SourceLoader):
     def __init__(
         self,
         base_loader: importlib.abc.SourceLoader,
-        transform: SourceTransform,
+        source_transform: SourceTransform,
+        injected: dict[str, any],
     ):
         self.base_loader = base_loader
-        self.transform = transform
+        self.source_transform = source_transform
+        self.injected = injected
 
     def get_filename(self, fullname: str) -> str:
         return self.base_loader.get_filename(fullname)
@@ -28,69 +36,113 @@ class SourceTransformLoader(importlib.abc.SourceLoader):
         return self.base_loader.get_data(path)
 
     def source_to_code(self, data, path, *, _optimize=-1):
-        data_trans = self.transform(data.decode("utf-8"))
+        data_trans = self.source_transform(data.decode("utf-8"))
         return compile(data_trans, path, mode="exec", optimize=_optimize)
 
+    def exec_module(self, module: types.ModuleType) -> None:
+        super().exec_module(module)
+        module.__dict__.update(self.injected)
 
-class CustomLoaderMetaPathFinder(importlib.abc.MetaPathFinder):
+
+class _TransformLoaderMetaPathFinder(importlib.abc.MetaPathFinder):
     def find_spec(fullname, path, target=None):
-        loader_transform = get_module_loader_transform(fullname)
-        if loader_transform is None:
+        reg = _get_module_transform(fullname)
+        if reg is None:
             return None
+        source_transform, injected = reg
 
-        # Find the finder that would be responsible for this package
-        # if a custom loader wasn't being used. This ensures
-        # we'll work with whatever loading mechanism you
-        # were using.
         for finder in sys.meta_path:
-            if finder == CustomLoaderMetaPathFinder:
+            # Find the finder that would be responsible for this package
+            # if a custom loader wasn't being used. This ensures
+            # we'll work with whatever loading mechanism you
+            # were using.
+
+            if finder == _TransformLoaderMetaPathFinder:
                 continue
             spec = finder.find_spec(fullname, path, target)
-            if spec is not None:
-                if not isinstance(spec.loader, importlib.abc.SourceLoader):
-                    raise ImportError(
-                        f"import_transforms only supports SourceLoader, got {type(spec.loader)}"
-                    )
-                spec.loader = loader_transform(spec.loader)
-                return spec
+            if spec is None:
+                continue
+            # Not much we can do if there's no source code, this might be surprising if it's your own package,
+            # or not if you are matching everything
+            if isinstance(spec.loader, importlib.abc.SourceLoader):
+                spec.loader = _TransformSourceLoader(
+                    spec.loader, source_transform, injected
+                )
+                # keep spec.loader_state unchanged since we don't know if the base loader
+                # depends on it
+            else:
+                logging.debug(
+                    f"Loader for {fullname} is not a SourceLoader, was {type(spec.loader)}"
+                )
+
+            return spec
         else:
             return None
 
 
-_MODULE_TO_LOADER_TRANSFORM: list[tuple[re.Pattern, LoaderTransform]] = []
+_MODULE_TO_SOURCE_TRANSFORM: list[
+    tuple[re.Pattern, (SourceTransform, dict[str, any])]
+] = []
 
-sys.meta_path.insert(0, CustomLoaderMetaPathFinder)
+_HAS_INSERTED_MPF = False
 
 
-def get_module_loader_transform(fullname) -> None | LoaderTransform:
-    global _MODULE_TO_LOADER_TRANSFORM
-    for regex, loader_transform in _MODULE_TO_LOADER_TRANSFORM:
-        if regex.match(fullname):
+def _get_module_transform(module_name) -> None | SourceTransform:
+    global _MODULE_TO_SOURCE_TRANSFORM
+    for regex, loader_transform in _MODULE_TO_SOURCE_TRANSFORM:
+        if regex.match(module_name):
             return loader_transform
     else:
         return None
 
 
-def set_module_loader_transform(
-    module_glob: str, loader_transform: LoaderTransform, check_loaded: bool = True
+def register_module_source_transform(
+    module_glob: str,
+    transform: SourceTransform,
+    injected: dict[str, any] = {},
+    check_loaded: bool = True,
 ):
-    global _MODULE_TO_LOADER_TRANSFORM
+    """
+    Registers a transformer to modify loaded source at import time.
+
+    module_glob: a glob-style pattern describing which modules
+                 this transform applies to.  Some examples:
+
+                 "foo": only transform the module "foo"
+                 "foo.*": transform any sub-module of foo, but not "foo" itself
+                 "*": tranform every module import
+
+    transform: a function that transforms the source into valid Python
+
+    injected: key/value pairs to be inserted into the resulting module
+
+    check_loaded: if True, raise an error if any already-loaded
+                  module matches `module_glob`.
+    """
+
+    global _HAS_INSERTED_MPF
+    if not _HAS_INSERTED_MPF:
+        sys.meta_path.insert(0, _TransformLoaderMetaPathFinder)
+        _HAS_INSERTED_MPF = True
 
     regex = re.compile(fnmatch.translate(module_glob))
     if check_loaded:
         for mod in sys.modules:
             if regex.match(mod):
                 raise Exception(
-                    f"Already loaded matching module: {mod} for prefix {module_glob}"
+                    f"Already loaded matching module: {mod} for prefix {module_glob}, re, {regex}"
                 )
 
-    _MODULE_TO_LOADER_TRANSFORM.append((regex, loader_transform))
+    global _MODULE_TO_SOURCE_TRANSFORM
+    _MODULE_TO_SOURCE_TRANSFORM.append((regex, (transform, injected)))
 
 
-def set_module_source_transform(
-    module_glob: str, transform: SourceTransform, check_loaded: bool = True
+def register_package_source_transform(
+    pkg_name,
+    transform: SourceTransform,
+    injected: dict[str, any] = {},
+    check_loaded: bool = True,
 ):
-    def f(base_loader):
-        return SourceTransformLoader(base_loader, transform)
-
-    set_module_loader_transform(module_glob, f, check_loaded)
+    return register_module_source_transform(
+        f"{pkg_name}.*", transform, injected, check_loaded
+    )
