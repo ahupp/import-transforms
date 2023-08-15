@@ -6,7 +6,7 @@ from os import path
 MEGATRON = "Megatron"
 OPTIMUS = "Optimus Prime"
 
-sys.path.append(path.join(path.dirname(__file__), "..", "test_pkgs"))
+sys.path.append(path.join(path.dirname(__file__), "pkgs"))
 
 
 def do_transform(src):
