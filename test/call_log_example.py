@@ -8,3 +8,6 @@ def middle(value):
 
 def bottom(value):
     return value + 3
+
+
+top()
