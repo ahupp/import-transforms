@@ -67,6 +67,7 @@ def test_main():
             "import_transforms",
             "call_log.CallLogSourceTransform",
             path.join(THIS_DIR, "call_log_example.py"),
-        ]
+        ],
+        cwd=THIS_DIR,
     )
     assert out == b"6 bottom(value + 2)\n6 middle(1)\n6 top()\n"
