@@ -17,7 +17,7 @@ The first argument is a glob-style pattern on the fully-qualified module name:
 - "foo.\*" matches all sub-modules of "foo" (but not "foo" itself).
 - "\*" will match all modules.
 
-As a shorthand to apply a transform to all sub-modules of your package, place this in `**init**.py``:
+As a shorthand to apply a transform to all sub-modules of your package, place this in `__init__.py`:
 
 ```python
 register_package_source_transform(__name__, my_transform)
