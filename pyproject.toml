@@ -1,6 +1,6 @@
 [tool.poetry]
 name = "import-transforms"
-version = "0.5"
+version = "0.6.0"
 description = ""
 authors = ["Adam Hupp <adam@hupp.org>"]
 license = "MIT"
